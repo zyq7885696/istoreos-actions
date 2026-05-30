@@ -1,4 +1,4 @@
-name: Build iStoreOS x86_64 EFI 纯净版
+name: Build iStoreOS x86_64 EFI 纯净版（含Web+172.16.1.251）
 
 on:
   repository_dispatch:
@@ -59,7 +59,7 @@ jobs:
           cd openwrt
           $GITHUB_WORKSPACE/$DIY_P2_SH
 
-      - name: 写入配置（x86_64 EFI + 2G + 插件）
+      - name: 写入完整配置（x86_64 EFI+LuCI+uhttpd+172.16.1.251）
         run: |
           cd openwrt
           cat > .config << EOF
@@ -69,7 +69,14 @@ jobs:
           CONFIG_TARGET_ROOTFS_PARTSIZE=2048
           CONFIG_TARGET_ROOTFS_EXT4=y
           CONFIG_TARGET_ROOTFS_EFI_BOOT=y
+          # 核心：必须把 WEB 服务全编进去
+          CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-base=y
+          CONFIG_PACKAGE_luci-compat=y
+          CONFIG_PACKAGE_uhttpd=y
+          CONFIG_PACKAGE_uhttpd-mod-ubus=y
+          CONFIG_PACKAGE_luci-app-uhttpd=y
+          # 主题与常用插件
           CONFIG_PACKAGE_luci-theme-argon=y
           CONFIG_PACKAGE_luci-app-store=y
           CONFIG_PACKAGE_luci-app-docker=y
@@ -79,32 +86,37 @@ jobs:
           CONFIG_ALL_NONSHARED=n
           EOF
 
+          # 自动配置：IP、密码、中文、旁路由
           mkdir -p files/etc/uci-defaults/
           cat > files/etc/uci-defaults/99-autoset << EOF
           #!/bin/sh
-          # 中文+argon
+          # 启用 uhttpd（Web 必启）
+          /etc/init.d/uhttpd enable
+          /etc/init.d/uhttpd start
+
+          # 中文+argon主题
           uci set luci.main.lang=zh-cn
           uci set luci.main.mediaurlbase=/luci-static/argon
           uci commit luci
 
-          # root密码123456
+          # root密码：123456
           passwd root <<PASS
           123456
           123456
           PASS
 
-          # 旁路由IP
-          uci set network.lan.ipaddr=192.168.2.1
+          # LAN IP：172.16.1.251/24（旁路由）
+          uci set network.lan.ipaddr=172.16.1.251
           uci set network.lan.netmask=255.255.255.0
           uci delete network.lan.gateway
           uci delete network.lan.dns
           uci commit network
 
-          # 关闭DHCP
+          # 关闭DHCP（旁路由）
           uci set dhcp.lan.ignore=1
           uci commit dhcp
 
-          # BBR
+          # 开启BBR
           cat > /etc/sysctl.d/99-bbr.conf <<SYSCTL
           net.core.default_qdisc=fq
           net.ipv4.tcp_congestion_control=bbr

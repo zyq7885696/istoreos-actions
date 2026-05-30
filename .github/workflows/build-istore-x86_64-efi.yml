@@ -9,10 +9,11 @@ on:
         required: false
         default: 'false'
   schedule:
-   - cron: 0 16 * * *
+    - cron: 0 16 * * *
 
 env:
   REPO_URL: https://github.com/istoreos/istoreos
+  REPO_BRANCH: istoreos-22.03
   FEEDS_CONF: feeds.conf
   CONFIG_FILE: .config
   DIY_P1_SH: diy-part1.sh
@@ -24,17 +25,11 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    strategy:
-      matrix:
-        REPO_BRANCH: [istoreos-22.03]
-        ARCHITECTURE: [x86]
-      fail-fast: false
-
     steps:
-      - name:  Checkout
+      - name: Checkout
         uses: actions/checkout@main
 
-      - name:  初始化环境
+      - name: 安装依赖
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -44,13 +39,13 @@ jobs:
           sudo mkdir -p /workdir
           sudo chown $USER:$GROUPS /workdir
 
-      - name:  克隆源码
+      - name: 克隆 iStoreOS 源码
         working-directory: /workdir
         run: |
-          git clone $REPO_URL -b ${{ matrix.REPO_BRANCH }} openwrt
+          git clone $REPO_URL -b $REPO_BRANCH openwrt
           ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-      - name:  加载 feeds & diy1
+      - name: diy-part1 + feeds
         run: |
           chmod +x $DIY_P1_SH
           cd openwrt
@@ -58,13 +53,13 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name:  加载 diy2
+      - name: diy-part2
         run: |
           chmod +x $DIY_P2_SH
           cd openwrt
           $GITHUB_WORKSPACE/$DIY_P2_SH
 
-      - name:  写入纯净配置（仅4插件 + 2G + EFI）
+      - name: 写入配置（x86_64 EFI + 2G + 插件）
         run: |
           cd openwrt
           cat > .config << EOF
@@ -87,29 +82,29 @@ jobs:
           mkdir -p files/etc/uci-defaults/
           cat > files/etc/uci-defaults/99-autoset << EOF
           #!/bin/sh
+          # 中文+argon
           uci set luci.main.lang=zh-cn
           uci set luci.main.mediaurlbase=/luci-static/argon
           uci commit luci
 
+          # root密码123456
           passwd root <<PASS
           123456
           123456
           PASS
 
+          # 旁路由IP
           uci set network.lan.ipaddr=192.168.2.1
           uci set network.lan.netmask=255.255.255.0
           uci delete network.lan.gateway
           uci delete network.lan.dns
           uci commit network
 
+          # 关闭DHCP
           uci set dhcp.lan.ignore=1
-          uci set dhcp.lan.dhcp_option='3,192.168.2.1 6,192.168.2.1'
           uci commit dhcp
 
-          uci set firewall.@zone[1].input=ACCEPT
-          uci set firewall.@zone[1].forward=ACCEPT
-          uci commit firewall
-
+          # BBR
           cat > /etc/sysctl.d/99-bbr.conf <<SYSCTL
           net.core.default_qdisc=fq
           net.ipv4.tcp_congestion_control=bbr
@@ -120,32 +115,32 @@ jobs:
           EOF
           chmod +x files/etc/uci-defaults/99-autoset
 
-      - name:  下载依赖
+      - name: 下载依赖
         run: |
           cd openwrt
           make defconfig
           make download -j8
 
-      - name:  编译固件
+      - name: 编译固件
         run: |
           cd openwrt
           make -j$(nproc) || make -j1 V=s
 
-      - name:  只保留 EFI 固件
+      - name: 只保留 EFI 固件
         run: |
           cd openwrt/bin/targets/x86/64
           rm -rf packages
           rm -f *-combined.img.gz
           echo "FIRMWARE=$PWD" >> $GITHUB_ENV
 
-      - name:  上传固件（无需Release权限）
+      - name: 上传固件（Artifacts）
         uses: actions/upload-artifact@v4
         with:
           name: iStoreOS-x86_64-EFI
-          path: ${{ env.FIRMWARE }}/*.img.gz
+          path: ${{ env.FIRMWARE }}/*-efi.img.gz
           retention-days: 30
 
-      - name:  删除旧运行记录
+      - name: 删除旧运行记录
         uses: GitRML/delete-workflow-runs@main
         with:
           retain_days: 1

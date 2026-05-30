@@ -76,7 +76,7 @@ jobs:
         mixkey: ${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}
         prefix: ${{ github.workspace }}/openwrt
 
-    - name: 加载自定义 feeds + 修复 iStore 源
+    - name: 加载自定义 feeds + iStore 源
       run: |
         cd openwrt
         chmod +x $GITHUB_WORKSPACE/$DIY_P1_SH
@@ -96,38 +96,37 @@ jobs:
         CONFIG_TARGET_ROOTFS_EXT4=y
         CONFIG_TARGET_ROOTFS_EFI_BOOT=y
 
-        # ========== WEB 页面 ==========
+        # WEB 页面
         CONFIG_PACKAGE_luci=y
         CONFIG_PACKAGE_luci-base=y
         CONFIG_PACKAGE_uhttpd=y
         CONFIG_PACKAGE_uhttpd-mod-ubus=y
 
-        # ========== iStoreOS 首页 & 网络 ==========
+        # iStoreOS 首页 & 网络
         CONFIG_PACKAGE_luci-app-index=y
         CONFIG_PACKAGE_luci-app-network=y
 
-        # ========== 主题 ==========
+        # 主题
         CONFIG_PACKAGE_luci-theme-argon=y
 
-        # ========== iStore 商店 ==========
+        # iStore 商店
         CONFIG_PACKAGE_luci-app-store=y
 
-        # ========== Docker ==========
+        # Docker
         CONFIG_PACKAGE_luci-app-docker=y
         CONFIG_PACKAGE_docker-compose=y
         CONFIG_PACKAGE_dockerd=y
 
-        # ========== ZeroTier ==========
+        # ZeroTier
         CONFIG_PACKAGE_luci-app-zerotier=y
         CONFIG_PACKAGE_zerotier=y
 
-        # ========== DiskMan ==========
+        # DiskMan
         CONFIG_PACKAGE_luci-app-diskman=y
         CONFIG_PACKAGE_lsblk=y
         CONFIG_PACKAGE_blkid=y
         CONFIG_PACKAGE_e2fsprogs=y
 
-        # ========== 基础 ==========
         CONFIG_PACKAGE_default-settings=y
         CONFIG_ALL_NONSHARED=n
         EOF
@@ -143,8 +142,8 @@ jobs:
         uci commit luci
 
         passwd root <<PASS
-        password
-        password
+        123456
+        123456
         PASS
 
         uci set network.lan.proto='static'
@@ -161,10 +160,10 @@ jobs:
         uci set firewall.@zone[1].forward='ACCEPT'
         uci commit firewall
 
-        cat > /etc/sysctl.d/99-bbr.conf <<EOF
+        cat > /etc/sysctl.d/99-bbr.conf <<SYSCTL
         net.core.default_qdisc=fq
         net.ipv4.tcp_congestion_control=bbr
-        EOF
+        SYSCTL
         sysctl -p /etc/sysctl.d/99-bbr.conf
 
         exit 0
@@ -173,7 +172,7 @@ jobs:
 
     - name: SSH 连接到 Actions
       uses: P3TERX/ssh2actions@v1.0.0
-      if: (github.event.inputs.ssh == 'true')
+      if: github.event.inputs.ssh == 'true'
 
     - name: 下载软件包
       run: |
@@ -190,7 +189,7 @@ jobs:
 
     - name: 上传 bin 文件夹
       uses: actions/upload-artifact@main
-      if: env.UPLOAD_BIN_DIR == 'true'
+      if: ${{ env.UPLOAD_BIN_DIR == 'true' }}
       with:
         name: OpenWrt_bin${{ env.FILE_DATE }}
         path: openwrt/bin
@@ -205,14 +204,13 @@ jobs:
 
     - name: 上传固件目录
       uses: actions/upload-artifact@main
-      if: !cancelled()
       with:
         name: OpenWrt_firmware${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
 
     - name: 生成发布标签
       id: tag
-      if: env.UPLOAD_RELEASE == 'true'
+      if: ${{ env.UPLOAD_RELEASE == 'true' }}
       run: |
         echo "release_tag=$(date +"%Y.%m.%d-%H.%M")" >> $GITHUB_OUTPUT
         touch release.txt
@@ -222,14 +220,14 @@ jobs:
         💿 根分区: 1024MB
         🌐 地址: 172.16.1.251
         👤 用户: root
-        🔒 密码: password
+        🔒 密码: 123456
         🚀 BBR: 开启
         🎯 模式: 旁路由
         " >> release.txt
 
     - name: 自动发布到 Releases
       uses: softprops/action-gh-release@v1
-      if: env.UPLOAD_RELEASE == 'true'
+      if: ${{ env.UPLOAD_RELEASE == 'true' }}
       with:
         tag_name: ${{ steps.tag.outputs.release_tag }}
         body_path: release.txt
@@ -244,7 +242,7 @@ jobs:
 
     - name: 删除旧固件
       uses: dev-drprasad/delete-older-releases@v0.1.0
-      if: env.UPLOAD_RELEASE == 'true'
+      if: ${{ env.UPLOAD_RELEASE == 'true' }}
       with:
         keep_latest: 4
         delete_tags: true

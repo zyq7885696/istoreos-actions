@@ -1,25 +1,11 @@
-name: Build iStoreOS x86_64 EFI 纯净版（含Web+172.16.1.251）
+name: iStoreOS x86_64 EFI 纯净最小版（WEB+商店+Docker+ZeroTier+DiskMan）
 
 on:
-  repository_dispatch:
   workflow_dispatch:
-    inputs:
-      ssh:
-        description: 'SSH connection to Actions'
-        required: false
-        default: 'false'
-  schedule:
-    - cron: 0 16 * * *
 
 env:
   REPO_URL: https://github.com/istoreos/istoreos
   REPO_BRANCH: istoreos-22.03
-  FEEDS_CONF: feeds.conf
-  CONFIG_FILE: .config
-  DIY_P1_SH: diy-part1.sh
-  DIY_P2_SH: diy-part2.sh
-  UPLOAD_BIN_DIR: false
-  UPLOAD_FIRMWARE: true
   TZ: Asia/Shanghai
 
 jobs:
@@ -29,132 +15,120 @@ jobs:
       - name: Checkout
         uses: actions/checkout@main
 
-      - name: 安装依赖
-        env:
-          DEBIAN_FRONTEND: noninteractive
+      - name: 安装环境
         run: |
           sudo apt update -qq
-          sudo apt install -y $(cat depends/ubuntu-22.04)
+          sudo apt install -y build-essential ccache libncurses5-dev libssl-dev \
+          git gawk unzip python3 python3-pip wget gettext xsltp
           sudo timedatectl set-timezone "$TZ"
-          sudo mkdir -p /workdir
-          sudo chown $USER:$GROUPS /workdir
 
-      - name: 克隆 iStoreOS 源码
-        working-directory: /workdir
+      - name: 克隆源码
         run: |
           git clone $REPO_URL -b $REPO_BRANCH openwrt
-          ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
-
-      - name: diy-part1 + feeds
-        run: |
-          chmod +x $DIY_P1_SH
           cd openwrt
-          $GITHUB_WORKSPACE/$DIY_P1_SH
+
+      - name: 配置 feeds（必须，否则插件找不到）
+        run: |
+          cd openwrt
+          sed -i 's/^#\(.*helloworld\)/\1/' feeds.conf.default
+          echo "src-git istore https://github.com/linkease/istore;main" >> feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: diy-part2
-        run: |
-          chmod +x $DIY_P2_SH
-          cd openwrt
-          $GITHUB_WORKSPACE/$DIY_P2_SH
-
-      - name: 写入完整配置（x86_64 EFI+LuCI+uhttpd+172.16.1.251）
+      - name: 写入最小.config（只编译你要的，绝不丢包）
         run: |
           cd openwrt
           cat > .config << EOF
-          CONFIG_TARGET_x86=y
-          CONFIG_TARGET_x86_64=y
-          CONFIG_TARGET_x86_64_DEVICE_generic=y
-          CONFIG_TARGET_ROOTFS_PARTSIZE=1024
-          CONFIG_TARGET_ROOTFS_EXT4=y
-          CONFIG_TARGET_ROOTFS_EFI_BOOT=y
-          # 核心：必须把 WEB 服务全编进去
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-base=y
-          CONFIG_PACKAGE_luci-compat=y
-          CONFIG_PACKAGE_uhttpd=y
-          CONFIG_PACKAGE_uhttpd-mod-ubus=y
-          CONFIG_PACKAGE_luci-app-uhttpd=y
-          # 主题与常用插件
-          CONFIG_PACKAGE_luci-theme-argon=y
-          CONFIG_PACKAGE_luci-app-store=y
-          CONFIG_PACKAGE_luci-app-docker=y
-          CONFIG_PACKAGE_luci-app-zerotier=y
-          CONFIG_PACKAGE_luci-app-diskman=y
-          CONFIG_PACKAGE_default-settings=y
-          CONFIG_ALL_NONSHARED=n
-          EOF
+  CONFIG_TARGET_x86=y
+  CONFIG_TARGET_x86_64=y
+  CONFIG_TARGET_x86_64_DEVICE_generic=y
+  CONFIG_TARGET_ROOTFS_PARTSIZE=2048
+  CONFIG_TARGET_ROOTFS_EXT4=y
+  CONFIG_TARGET_ROOTFS_EFI_BOOT=y
 
-          # 自动配置：IP、密码、中文、旁路由
+  # ========== WEB 管理页面（必须） ==========
+  CONFIG_PACKAGE_luci=y
+  CONFIG_PACKAGE_uhttpd=y
+  CONFIG_PACKAGE_uhttpd-mod-ubus=y
+
+  # ========== iStoreOS 首页 ==========
+  CONFIG_PACKAGE_luci-app-index=y
+
+  # ========== 网络配置 ==========
+  CONFIG_PACKAGE_luci-app-network=y
+
+  # ========== iStore 商店 ==========
+  CONFIG_PACKAGE_luci-app-store=y
+
+  # ========== Docker ==========
+  CONFIG_PACKAGE_luci-app-docker=y
+  CONFIG_PACKAGE_docker-compose=y
+  CONFIG_PACKAGE_dockerd=y
+
+  # ========== ZeroTier ==========
+  CONFIG_PACKAGE_luci-app-zerotier=y
+  CONFIG_PACKAGE_zerotier=y
+
+  # ========== DiskMan ==========
+  CONFIG_PACKAGE_luci-app-diskman=y
+  CONFIG_PACKAGE_lsblk=y
+  CONFIG_PACKAGE_blkid=y
+  CONFIG_PACKAGE_e2fsprogs=y
+
+  # ========== 主题 ==========
+  CONFIG_PACKAGE_luci-theme-argon=y
+
+  # ========== 基础 ==========
+  CONFIG_PACKAGE_default-settings=y
+  CONFIG_ALL_NONSHARED=n
+EOF
+
+      - name: 自动配置脚本（IP 172.16.1.251）
+        run: |
+          cd openwrt
           mkdir -p files/etc/uci-defaults/
           cat > files/etc/uci-defaults/99-autoset << EOF
-          #!/bin/sh
-          # 启用 uhttpd（Web 必启）
-          /etc/init.d/uhttpd enable
-          /etc/init.d/uhttpd start
+#!/bin/sh
+/etc/init.d/uhttpd enable
+/etc/init.d/uhttpd start
 
-          # 中文+argon主题
-          uci set luci.main.lang=zh-cn
-          uci set luci.main.mediaurlbase=/luci-static/argon
-          uci commit luci
+uci set luci.main.lang=zh-cn
+uci set luci.main.mediaurlbase=/luci-static/argon
+uci commit luci
 
-          # root密码：123456
-          passwd root <<PASS
-          123456
-          123456
-          PASS
+passwd root <<PASS
+123456
+123456
+PASS
 
-          # LAN IP：172.16.1.251/24（旁路由）
-          uci set network.lan.ipaddr=172.16.1.251
-          uci set network.lan.netmask=255.255.255.0
-          uci delete network.lan.gateway
-          uci delete network.lan.dns
-          uci commit network
+uci set network.lan.proto=static
+uci set network.lan.ipaddr=172.16.1.251
+uci set network.lan.netmask=255.255.0.0
+uci commit network
 
-          # 关闭DHCP（旁路由）
-          uci set dhcp.lan.ignore=1
-          uci commit dhcp
+uci set dhcp.lan.ignore=1
+uci commit dhcp
 
-          # 开启BBR
-          cat > /etc/sysctl.d/99-bbr.conf <<SYSCTL
-          net.core.default_qdisc=fq
-          net.ipv4.tcp_congestion_control=bbr
-          SYSCTL
-          sysctl -p /etc/sysctl.d/99-bbr.conf
-
-          exit 0
-          EOF
+exit 0
+EOF
           chmod +x files/etc/uci-defaults/99-autoset
 
-      - name: 下载依赖
+      - name: 下载 & 编译
         run: |
           cd openwrt
           make defconfig
           make download -j8
-
-      - name: 编译固件
-        run: |
-          cd openwrt
           make -j$(nproc) || make -j1 V=s
 
-      - name: 只保留 EFI 固件
+      - name: 提取 EFI 固件
         run: |
           cd openwrt/bin/targets/x86/64
           rm -rf packages
           rm -f *-combined.img.gz
-          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          echo "FIRMWARE=\$PWD" >> \$GITHUB_ENV
 
-      - name: 上传固件（Artifacts）
+      - name: 上传固件
         uses: actions/upload-artifact@v4
         with:
           name: iStoreOS-x86_64-EFI
-          path: ${{ env.FIRMWARE }}/*-efi.img.gz
-          retention-days: 30
-
-      - name: 删除旧运行记录
-        uses: GitRML/delete-workflow-runs@main
-        with:
-          retain_days: 1
-          keep_minimum_runs: 1
-          token: ${{ github.token }}
+          path: openwrt/bin/targets/x86/64/*efi.img.gz

@@ -1,4 +1,4 @@
-name: Build iStore OS x86_64 EFI
+name: Build iStore OS
 
 on:
   repository_dispatch:
@@ -13,6 +13,7 @@ on:
 
 env:
   REPO_URL: https://github.com/istoreos/istoreos
+  # REPO_BRANCH: main
   FEEDS_CONF: feeds.conf
   CONFIG_FILE: .config
   DIY_P1_SH: diy-part1.sh
@@ -25,13 +26,24 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         REPO_BRANCH:
+          # - main
           - istoreos-22.03
+          # - istoreos-23.05
         ARCHITECTURE:
+          - rk33xx
+          - rk35xx
           - x86
+        os:
+          - ubuntu-22.04
+        include:
+          - REPO_BRANCH: istoreos-23.05
+            ARCHITECTURE: x86-alpha
+            os: ubuntu-22.04
+
       fail-fast: false
 
     steps:
@@ -40,25 +52,38 @@ jobs:
 
     - name: 检查服务器配置
       run: |
-        echo "CPU核心: $(nproc)"
+        echo "若分配的服务器性能不足，务必及时取消，重新运行！"
+        echo -e "------------------------------- CPU信息 -------------------------------\n"
+        echo "CPU物理数量:$(cat /proc/cpuinfo| grep "physical id"| sort| uniq| wc -l)"
+        echo -e "CPU核心及版本信息: $(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c) \n"
+        echo -e "------------------------------- 内存信息 -------------------------------\n"
+        echo "已安装内存详细信息: "
+        sudo lshw -short -C memory | grep GiB
+        echo -e "\n"
+        echo -e "------------------------------- 磁盘信息 -------------------------------\n"
+        echo -e "磁盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l) \n"
+        echo "------------------------------- 磁盘详情 -------------------------------\n"
         df -Th
 
     - name: 初始化编译环境
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /opt/ghc
+        echo "------------------------------- 更新并安装依赖 -------------------------------"
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android /opt/ghc
         sudo -E apt-get -qq update
-        sudo -E apt-get -qq install $(cat $GITHUB_WORKSPACE/depends/ubuntu-22.04)
+        sudo -E apt-get -qq install $(cat $GITHUB_WORKSPACE/depends/${{ matrix.os }})
         wget https://bootstrap.pypa.io/pip/3.6/get-pip.py
         sudo python3 get-pip.py
         sudo rm -rf get-pip.py
         sudo pip install pyelftools
-        docker rmi `docker images -q` || true
-        docker image prune -a -f || true
-        sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mysql* php* mongodb* snapd* android* || true
+        echo "------------------------------- 清理Docker镜像和软件 -------------------------------"
+        docker rmi `docker images -q`
+        docker image prune -a -f
+        sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* dotnet* moby* snapd* android* || true
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
+        echo "------------------------------- 设置工作目录及时区 -------------------------------"
         sudo timedatectl set-timezone "$TZ"
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
@@ -66,6 +91,7 @@ jobs:
     - name: 克隆源码
       working-directory: /workdir
       run: |
+        df -hT $PWD
         git clone $REPO_URL -b ${{ matrix.REPO_BRANCH }} openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
@@ -73,161 +99,111 @@ jobs:
       uses: klever1988/cachewrtbuild@main
       with:
         ccache: 'true'
-        mixkey: ${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}
+        mixkey: ${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}
         prefix: ${{ github.workspace }}/openwrt
 
-    - name: 加载自定义 feeds + iStore 源
+    - name: 加载自定义 feeds
+      env:
+        FEEDS_CONF_PATH: ${{ matrix.ARCHITECTURE }}/${{ env.FEEDS_CONF }}
       run: |
+        [ -e $FEEDS_CONF_PATH ] && mv $FEEDS_CONF_PATH openwrt/$FEEDS_CONF
+        chmod +x $DIY_P1_SH
         cd openwrt
-        chmod +x $GITHUB_WORKSPACE/$DIY_P1_SH
         $GITHUB_WORKSPACE/$DIY_P1_SH
-        echo "src-git istore https://github.com/linkease/istore;main" >> feeds.conf.default
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
 
-    - name: 写入 x86_64 EFI 完整配置
+    - name: 更新 feeds
+      run: cd openwrt && ./scripts/feeds update -a
+
+    - name: 安装 feeds
+      run: cd openwrt && ./scripts/feeds install -a
+
+    - name: 加载自定义配置
+      env:
+        CONFIG_FILE_PATH: ${{ matrix.ARCHITECTURE }}/${{ env.CONFIG_FILE }}
       run: |
+        [ -e files ] && mv files openwrt/files
+        [ -e $CONFIG_FILE_PATH ] && mv $CONFIG_FILE_PATH openwrt/$CONFIG_FILE
+        chmod +x $DIY_P2_SH
         cd openwrt
-        cat > .config << EOF
-        CONFIG_TARGET_x86=y
-        CONFIG_TARGET_x86_64=y
-        CONFIG_TARGET_x86_64_DEVICE_generic=y
-        CONFIG_TARGET_ROOTFS_PARTSIZE=1024
-        CONFIG_TARGET_ROOTFS_EXT4=y
-        CONFIG_TARGET_ROOTFS_EFI_BOOT=y
-
-        # WEB 页面
-        CONFIG_PACKAGE_luci=y
-        CONFIG_PACKAGE_luci-base=y
-        CONFIG_PACKAGE_uhttpd=y
-        CONFIG_PACKAGE_uhttpd-mod-ubus=y
-
-        # iStoreOS 首页 & 网络
-        CONFIG_PACKAGE_luci-app-index=y
-        CONFIG_PACKAGE_luci-app-network=y
-
-        # 主题
-        CONFIG_PACKAGE_luci-theme-argon=y
-
-        # iStore 商店
-        CONFIG_PACKAGE_luci-app-store=y
-
-        # Docker
-        CONFIG_PACKAGE_luci-app-docker=y
-        CONFIG_PACKAGE_docker-compose=y
-        CONFIG_PACKAGE_dockerd=y
-
-        # ZeroTier
-        CONFIG_PACKAGE_luci-app-zerotier=y
-        CONFIG_PACKAGE_zerotier=y
-
-        # DiskMan
-        CONFIG_PACKAGE_luci-app-diskman=y
-        CONFIG_PACKAGE_lsblk=y
-        CONFIG_PACKAGE_blkid=y
-        CONFIG_PACKAGE_e2fsprogs=y
-
-        CONFIG_PACKAGE_default-settings=y
-        CONFIG_ALL_NONSHARED=n
-        EOF
-
-        mkdir -p files/etc/uci-defaults/
-        cat > files/etc/uci-defaults/99-autoset << EOF
-        #!/bin/sh
-        /etc/init.d/uhttpd enable
-        /etc/init.d/uhttpd start
-
-        uci set luci.main.lang='zh-cn'
-        uci set luci.main.mediaurlbase='/luci-static/argon'
-        uci commit luci
-
-        passwd root <<PASS
-        123456
-        123456
-        PASS
-
-        uci set network.lan.proto='static'
-        uci set network.lan.ipaddr='172.16.1.251'
-        uci set network.lan.netmask='255.255.255.0'
-        uci delete network.lan.gateway
-        uci delete network.lan.dns
-        uci commit network
-
-        uci set dhcp.lan.ignore='1'
-        uci commit dhcp
-
-        uci set firewall.@zone[1].input='ACCEPT'
-        uci set firewall.@zone[1].forward='ACCEPT'
-        uci commit firewall
-
-        cat > /etc/sysctl.d/99-bbr.conf <<SYSCTL
-        net.core.default_qdisc=fq
-        net.ipv4.tcp_congestion_control=bbr
-        SYSCTL
-        sysctl -p /etc/sysctl.d/99-bbr.conf
-
-        exit 0
-        EOF
-        chmod +x files/etc/uci-defaults/99-autoset
+        $GITHUB_WORKSPACE/$DIY_P2_SH
 
     - name: SSH 连接到 Actions
       uses: P3TERX/ssh2actions@v1.0.0
-      if: github.event.inputs.ssh == 'true'
+      if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh  != 'false') || contains(github.event.action, 'ssh')
+      env:
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
     - name: 下载软件包
+      id: package
       run: |
         cd openwrt
         make defconfig
         make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
 
     - name: 编译固件
       id: compile
       run: |
         cd openwrt
-        make -j$(nproc) || make -j1 V=s
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 || make -j1 V=s
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+        echo "::set-output name=status::success"
+
+    - name: 检查磁盘空间
+      if: (!cancelled())
+      run: df -hT
 
     - name: 上传 bin 文件夹
       uses: actions/upload-artifact@main
-      if: ${{ env.UPLOAD_BIN_DIR == 'true' }}
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
       with:
         name: OpenWrt_bin${{ env.FILE_DATE }}
         path: openwrt/bin
 
-    - name: 整理固件（只保留 EFI）
+    - name: 整理固件文件
       id: organize
+      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
-        cd openwrt/bin/targets/x86/64
+        cd openwrt/bin/targets/*/*
         rm -rf packages
-        rm -f *-combined.img.gz
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "::set-output name=status::success"
 
     - name: 上传固件目录
       uses: actions/upload-artifact@main
+      if: steps.organize.outputs.status == 'success' && !cancelled()
       with:
         name: OpenWrt_firmware${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
 
     - name: 生成发布标签
       id: tag
-      if: ${{ env.UPLOAD_RELEASE == 'true' }}
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
-        echo "release_tag=$(date +"%Y.%m.%d-%H.%M")" >> $GITHUB_OUTPUT
+        echo "::set-output name=release_tag::$(date +"%Y.%m.%d-%H.%M")"
         touch release.txt
         echo "
-        💻 架构: x86_64 (仅 EFI)
-        📦 预装: iStore + Docker + ZeroTier + DiskMan
-        💿 根分区: 1024MB
-        🌐 地址: 172.16.1.251
-        👤 用户: root
-        🔒 密码: 123456
-        🚀 BBR: 开启
-        🎯 模式: 旁路由
-        " >> release.txt
+        💻 架构: ${{ matrix.ARCHITECTURE }}
 
-    - name: 自动发布到 Releases
+        📂 源码: ${{ env.REPO_URL }}
+
+        🌳 分支: ${{ matrix.REPO_BRANCH }}
+
+        ⏱️ 编译时间: $(date +"%Y年%m月%d日%H时%M分")
+
+        🌐 管理地址: 10.0.0.1
+
+        👤 用户名: root
+
+        🔒 密码: password " >> release.txt
+        echo "::set-output name=status::success"
+
+    - name: 自动发布固件到 Releases
       uses: softprops/action-gh-release@v1
-      if: ${{ env.UPLOAD_RELEASE == 'true' }}
+      if: steps.tag.outputs.status == 'success' && !cancelled()
       with:
         tag_name: ${{ steps.tag.outputs.release_tag }}
         body_path: release.txt
@@ -240,9 +216,9 @@ jobs:
         keep_minimum_runs: 1
         token: ${{ env.GITHUB_TOKEN }}
 
-    - name: 删除旧固件
+    - name: 删除自动发布的旧固件
       uses: dev-drprasad/delete-older-releases@v0.1.0
-      if: ${{ env.UPLOAD_RELEASE == 'true' }}
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       with:
         keep_latest: 4
         delete_tags: true

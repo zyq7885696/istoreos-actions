@@ -19,9 +19,7 @@ env:
   DIY_P2_SH: diy-part2.sh
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
-  UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
-  GITHUB_TOKEN: ${{ secrets.ACCESS_TOKEN }}
 
 jobs:
   build:
@@ -140,21 +138,16 @@ jobs:
           rm -f *-combined.img.gz
           echo "FIRMWARE=$PWD" >> $GITHUB_ENV
 
-      - name:  上传并发布
-        uses: softprops/action-gh-release@v1
+      - name:  上传固件（无需Release权限）
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: $(date +"%Y.%m.%d-%H%M")-x64-EFI
-          body: |
-            架构：x86_64 EFI
-            插件：iStore商店 + Docker + ZeroTier + DiskMan
-            空间：2048MB
-            地址：192.168.2.1
-            密码：123456
-            模式：旁路由
-          files: ${{ env.FIRMWARE }}/*
+          name: iStoreOS-x86_64-EFI
+          path: ${{ env.FIRMWARE }}/*.img.gz
+          retention-days: 30
 
       - name:  删除旧运行记录
         uses: GitRML/delete-workflow-runs@main
         with:
           retain_days: 1
           keep_minimum_runs: 1
+          token: ${{ github.token }}

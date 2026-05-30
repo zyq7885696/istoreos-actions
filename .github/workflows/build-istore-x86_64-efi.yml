@@ -1,134 +1,250 @@
-name: iStoreOS x86_64 EFI 纯净最小版（WEB+商店+Docker+ZeroTier+DiskMan）
+name: Build iStore OS x86_64 EFI
 
 on:
+  repository_dispatch:
   workflow_dispatch:
+    inputs:
+      ssh:
+        description: 'SSH connection to Actions'
+        required: false
+        default: 'false'
+  schedule:
+   - cron: 0 16 * * *
 
 env:
   REPO_URL: https://github.com/istoreos/istoreos
-  REPO_BRANCH: istoreos-22.03
+  FEEDS_CONF: feeds.conf
+  CONFIG_FILE: .config
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
+  UPLOAD_BIN_DIR: true
+  UPLOAD_FIRMWARE: true
+  UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
+  GITHUB_TOKEN: ${{ secrets.ACCESS_TOKEN }}
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        REPO_BRANCH:
+          - istoreos-22.03
+        ARCHITECTURE:
+          - x86
+      fail-fast: false
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@main
+    - name: 准备完成
+      uses: actions/checkout@main
 
-      - name: 安装环境
-        run: |
-          sudo apt update -qq
-          sudo apt install -y build-essential ccache libncurses5-dev libssl-dev \
-          git gawk unzip python3 python3-pip wget gettext xsltp
-          sudo timedatectl set-timezone "$TZ"
+    - name: 检查服务器配置
+      run: |
+        echo "CPU核心: $(nproc)"
+        df -Th
 
-      - name: 克隆源码
-        run: |
-          git clone $REPO_URL -b $REPO_BRANCH openwrt
-          cd openwrt
+    - name: 初始化编译环境
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /opt/ghc
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install $(cat $GITHUB_WORKSPACE/depends/ubuntu-22.04)
+        wget https://bootstrap.pypa.io/pip/3.6/get-pip.py
+        sudo python3 get-pip.py
+        sudo rm -rf get-pip.py
+        sudo pip install pyelftools
+        docker rmi `docker images -q` || true
+        docker image prune -a -f || true
+        sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mysql* php* mongodb* snapd* android* || true
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
 
-      - name: 配置 feeds（必须，否则插件找不到）
-        run: |
-          cd openwrt
-          sed -i 's/^#\(.*helloworld\)/\1/' feeds.conf.default
-          echo "src-git istore https://github.com/linkease/istore;main" >> feeds.conf.default
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+    - name: 克隆源码
+      working-directory: /workdir
+      run: |
+        git clone $REPO_URL -b ${{ matrix.REPO_BRANCH }} openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-      - name: 写入最小.config（只编译你要的，绝不丢包）
-        run: |
-          cd openwrt
-          cat > .config << EOF
-  CONFIG_TARGET_x86=y
-  CONFIG_TARGET_x86_64=y
-  CONFIG_TARGET_x86_64_DEVICE_generic=y
-  CONFIG_TARGET_ROOTFS_PARTSIZE=2048
-  CONFIG_TARGET_ROOTFS_EXT4=y
-  CONFIG_TARGET_ROOTFS_EFI_BOOT=y
+    - name: 缓存构建动作
+      uses: klever1988/cachewrtbuild@main
+      with:
+        ccache: 'true'
+        mixkey: ${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}
+        prefix: ${{ github.workspace }}/openwrt
 
-  # ========== WEB 管理页面（必须） ==========
-  CONFIG_PACKAGE_luci=y
-  CONFIG_PACKAGE_uhttpd=y
-  CONFIG_PACKAGE_uhttpd-mod-ubus=y
+    - name: 加载自定义 feeds + 修复 iStore 源
+      run: |
+        cd openwrt
+        chmod +x $GITHUB_WORKSPACE/$DIY_P1_SH
+        $GITHUB_WORKSPACE/$DIY_P1_SH
+        echo "src-git istore https://github.com/linkease/istore;main" >> feeds.conf.default
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
 
-  # ========== iStoreOS 首页 ==========
-  CONFIG_PACKAGE_luci-app-index=y
+    - name: 写入 x86_64 EFI 完整配置
+      run: |
+        cd openwrt
+        cat > .config << EOF
+        CONFIG_TARGET_x86=y
+        CONFIG_TARGET_x86_64=y
+        CONFIG_TARGET_x86_64_DEVICE_generic=y
+        CONFIG_TARGET_ROOTFS_PARTSIZE=1024
+        CONFIG_TARGET_ROOTFS_EXT4=y
+        CONFIG_TARGET_ROOTFS_EFI_BOOT=y
 
-  # ========== 网络配置 ==========
-  CONFIG_PACKAGE_luci-app-network=y
+        # ========== WEB 页面 ==========
+        CONFIG_PACKAGE_luci=y
+        CONFIG_PACKAGE_luci-base=y
+        CONFIG_PACKAGE_uhttpd=y
+        CONFIG_PACKAGE_uhttpd-mod-ubus=y
 
-  # ========== iStore 商店 ==========
-  CONFIG_PACKAGE_luci-app-store=y
+        # ========== iStoreOS 首页 & 网络 ==========
+        CONFIG_PACKAGE_luci-app-index=y
+        CONFIG_PACKAGE_luci-app-network=y
 
-  # ========== Docker ==========
-  CONFIG_PACKAGE_luci-app-docker=y
-  CONFIG_PACKAGE_docker-compose=y
-  CONFIG_PACKAGE_dockerd=y
+        # ========== 主题 ==========
+        CONFIG_PACKAGE_luci-theme-argon=y
 
-  # ========== ZeroTier ==========
-  CONFIG_PACKAGE_luci-app-zerotier=y
-  CONFIG_PACKAGE_zerotier=y
+        # ========== iStore 商店 ==========
+        CONFIG_PACKAGE_luci-app-store=y
 
-  # ========== DiskMan ==========
-  CONFIG_PACKAGE_luci-app-diskman=y
-  CONFIG_PACKAGE_lsblk=y
-  CONFIG_PACKAGE_blkid=y
-  CONFIG_PACKAGE_e2fsprogs=y
+        # ========== Docker ==========
+        CONFIG_PACKAGE_luci-app-docker=y
+        CONFIG_PACKAGE_docker-compose=y
+        CONFIG_PACKAGE_dockerd=y
 
-  # ========== 主题 ==========
-  CONFIG_PACKAGE_luci-theme-argon=y
+        # ========== ZeroTier ==========
+        CONFIG_PACKAGE_luci-app-zerotier=y
+        CONFIG_PACKAGE_zerotier=y
 
-  # ========== 基础 ==========
-  CONFIG_PACKAGE_default-settings=y
-  CONFIG_ALL_NONSHARED=n
-EOF
+        # ========== DiskMan ==========
+        CONFIG_PACKAGE_luci-app-diskman=y
+        CONFIG_PACKAGE_lsblk=y
+        CONFIG_PACKAGE_blkid=y
+        CONFIG_PACKAGE_e2fsprogs=y
 
-      - name: 自动配置脚本（IP 172.16.1.251）
-        run: |
-          cd openwrt
-          mkdir -p files/etc/uci-defaults/
-          cat > files/etc/uci-defaults/99-autoset << EOF
-#!/bin/sh
-/etc/init.d/uhttpd enable
-/etc/init.d/uhttpd start
+        # ========== 基础 ==========
+        CONFIG_PACKAGE_default-settings=y
+        CONFIG_ALL_NONSHARED=n
+        EOF
 
-uci set luci.main.lang=zh-cn
-uci set luci.main.mediaurlbase=/luci-static/argon
-uci commit luci
+        mkdir -p files/etc/uci-defaults/
+        cat > files/etc/uci-defaults/99-autoset << EOF
+        #!/bin/sh
+        /etc/init.d/uhttpd enable
+        /etc/init.d/uhttpd start
 
-passwd root <<PASS
-123456
-123456
-PASS
+        uci set luci.main.lang='zh-cn'
+        uci set luci.main.mediaurlbase='/luci-static/argon'
+        uci commit luci
 
-uci set network.lan.proto=static
-uci set network.lan.ipaddr=172.16.1.251
-uci set network.lan.netmask=255.255.0.0
-uci commit network
+        passwd root <<PASS
+        password
+        password
+        PASS
 
-uci set dhcp.lan.ignore=1
-uci commit dhcp
+        uci set network.lan.proto='static'
+        uci set network.lan.ipaddr='172.16.1.251'
+        uci set network.lan.netmask='255.255.255.0'
+        uci delete network.lan.gateway
+        uci delete network.lan.dns
+        uci commit network
 
-exit 0
-EOF
-          chmod +x files/etc/uci-defaults/99-autoset
+        uci set dhcp.lan.ignore='1'
+        uci commit dhcp
 
-      - name: 下载 & 编译
-        run: |
-          cd openwrt
-          make defconfig
-          make download -j8
-          make -j$(nproc) || make -j1 V=s
+        uci set firewall.@zone[1].input='ACCEPT'
+        uci set firewall.@zone[1].forward='ACCEPT'
+        uci commit firewall
 
-      - name: 提取 EFI 固件
-        run: |
-          cd openwrt/bin/targets/x86/64
-          rm -rf packages
-          rm -f *-combined.img.gz
-          echo "FIRMWARE=\$PWD" >> \$GITHUB_ENV
+        cat > /etc/sysctl.d/99-bbr.conf <<EOF
+        net.core.default_qdisc=fq
+        net.ipv4.tcp_congestion_control=bbr
+        EOF
+        sysctl -p /etc/sysctl.d/99-bbr.conf
 
-      - name: 上传固件
-        uses: actions/upload-artifact@v4
-        with:
-          name: iStoreOS-x86_64-EFI
-          path: openwrt/bin/targets/x86/64/*efi.img.gz
+        exit 0
+        EOF
+        chmod +x files/etc/uci-defaults/99-autoset
+
+    - name: SSH 连接到 Actions
+      uses: P3TERX/ssh2actions@v1.0.0
+      if: (github.event.inputs.ssh == 'true')
+
+    - name: 下载软件包
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j8
+
+    - name: 编译固件
+      id: compile
+      run: |
+        cd openwrt
+        make -j$(nproc) || make -j1 V=s
+        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+    - name: 上传 bin 文件夹
+      uses: actions/upload-artifact@main
+      if: env.UPLOAD_BIN_DIR == 'true'
+      with:
+        name: OpenWrt_bin${{ env.FILE_DATE }}
+        path: openwrt/bin
+
+    - name: 整理固件（只保留 EFI）
+      id: organize
+      run: |
+        cd openwrt/bin/targets/x86/64
+        rm -rf packages
+        rm -f *-combined.img.gz
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+
+    - name: 上传固件目录
+      uses: actions/upload-artifact@main
+      if: !cancelled()
+      with:
+        name: OpenWrt_firmware${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE }}
+
+    - name: 生成发布标签
+      id: tag
+      if: env.UPLOAD_RELEASE == 'true'
+      run: |
+        echo "release_tag=$(date +"%Y.%m.%d-%H.%M")" >> $GITHUB_OUTPUT
+        touch release.txt
+        echo "
+        💻 架构: x86_64 (仅 EFI)
+        📦 预装: iStore + Docker + ZeroTier + DiskMan
+        💿 根分区: 1024MB
+        🌐 地址: 172.16.1.251
+        👤 用户: root
+        🔒 密码: password
+        🚀 BBR: 开启
+        🎯 模式: 旁路由
+        " >> release.txt
+
+    - name: 自动发布到 Releases
+      uses: softprops/action-gh-release@v1
+      if: env.UPLOAD_RELEASE == 'true'
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        body_path: release.txt
+        files: ${{ env.FIRMWARE }}/*
+
+    - name: 删除运行记录
+      uses: GitRML/delete-workflow-runs@main
+      with:
+        retain_days: 1
+        keep_minimum_runs: 1
+        token: ${{ env.GITHUB_TOKEN }}
+
+    - name: 删除旧固件
+      uses: dev-drprasad/delete-older-releases@v0.1.0
+      if: env.UPLOAD_RELEASE == 'true'
+      with:
+        keep_latest: 4
+        delete_tags: true

@@ -93,10 +93,10 @@ jobs:
           uci set luci.main.mediaurlbase=/luci-static/argon
           uci commit luci
 
-          passwd root <<EOF
+          passwd root <<PASS
           123456
           123456
-          EOF
+          PASS
 
           uci set network.lan.ipaddr=192.168.2.1
           uci set network.lan.netmask=255.255.255.0
@@ -112,10 +112,10 @@ jobs:
           uci set firewall.@zone[1].forward=ACCEPT
           uci commit firewall
 
-          cat > /etc/sysctl.d/99-bbr.conf <<EOF
+          cat > /etc/sysctl.d/99-bbr.conf <<SYSCTL
           net.core.default_qdisc=fq
           net.ipv4.tcp_congestion_control=bbr
-          EOF
+          SYSCTL
           sysctl -p /etc/sysctl.d/99-bbr.conf
 
           exit 0

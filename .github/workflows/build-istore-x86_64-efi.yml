@@ -1,4 +1,4 @@
-name: Build ZiStore OS
+name: Build iStore OS
 
 on:
   repository_dispatch:
@@ -31,9 +31,11 @@ jobs:
       matrix:
         REPO_BRANCH:
           # - main
-          - istoreos-22.03
-          # - istoreos-23.05
+          # - istoreos-22.03
+          - istoreos-23.05
         ARCHITECTURE:
+         # - rk33xx
+         # - rk35xx
           - x86
         os:
           - ubuntu-22.04
@@ -148,7 +150,7 @@ jobs:
         echo -e "$(nproc) thread compile"
         make -j$(nproc) || make -j1 || make -j1 V=s
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
+        echo "::set-output name=status::success"
 
     - name: 检查磁盘空间
       if: (!cancelled())
@@ -165,12 +167,10 @@ jobs:
       id: organize
       if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
-        # 【仅修复：自动定位固件目录，不报错】
-        FIRMWARE_DIR=$(find openwrt/bin/targets -type d -name "packages" -prune -o -type d | grep -v packages | head -1)
-        cd "$FIRMWARE_DIR"
+        cd openwrt/bin/targets/*/*
         rm -rf packages
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
+        echo "::set-output name=status::success"
 
     - name: 上传固件目录
       uses: actions/upload-artifact@main
@@ -183,7 +183,7 @@ jobs:
       id: tag
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
-        echo "release_tag=$(date +"%Y.%m.%d-%H.%M")" >> $GITHUB_OUTPUT
+        echo "::set-output name=release_tag::$(date +"%Y.%m.%d-%H.%M")"
         touch release.txt
         echo "
         💻 架构: ${{ matrix.ARCHITECTURE }}
@@ -199,7 +199,7 @@ jobs:
         👤 用户名: root
 
         🔒 密码: password " >> release.txt
-        echo "status=success" >> $GITHUB_OUTPUT
+        echo "::set-output name=status::success"
 
     - name: 自动发布固件到 Releases
       uses: softprops/action-gh-release@v1
@@ -222,6 +222,3 @@ jobs:
       with:
         keep_latest: 4
         delete_tags: true
-      # 【仅修复：添加TOKEN，解决权限报错】
-      env:
-        GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}

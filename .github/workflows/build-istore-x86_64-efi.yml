@@ -1,4 +1,4 @@
-name: Build iStore OS
+name: Build ZiStore OS
 
 on:
   repository_dispatch:
@@ -134,15 +134,6 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
-    - name: 下载软件包
-      id: package
-      run: |
-        cd openwrt
-        make defconfig
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
-
     - name: 编译固件
       id: compile
       run: |
@@ -150,7 +141,7 @@ jobs:
         echo -e "$(nproc) thread compile"
         make -j$(nproc) || make -j1 || make -j1 V=s
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-        echo "::set-output name=status::success"
+        echo "status=success" >> $GITHUB_OUTPUT
 
     - name: 检查磁盘空间
       if: (!cancelled())
@@ -170,7 +161,7 @@ jobs:
         cd openwrt/bin/targets/*/*
         rm -rf packages
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "::set-output name=status::success"
+        echo "status=success" >> $GITHUB_OUTPUT
 
     - name: 上传固件目录
       uses: actions/upload-artifact@main
@@ -183,7 +174,7 @@ jobs:
       id: tag
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
-        echo "::set-output name=release_tag::$(date +"%Y.%m.%d-%H.%M")"
+        echo "release_tag=$(date +"%Y.%m.%d-%H.%M")" >> $GITHUB_OUTPUT
         touch release.txt
         echo "
         💻 架构: ${{ matrix.ARCHITECTURE }}
@@ -199,7 +190,7 @@ jobs:
         👤 用户名: root
 
         🔒 密码: password " >> release.txt
-        echo "::set-output name=status::success"
+        echo "status=success" >> $GITHUB_OUTPUT
 
     - name: 自动发布固件到 Releases
       uses: softprops/action-gh-release@v1
